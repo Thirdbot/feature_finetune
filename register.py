@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 from pathlib import Path
@@ -145,6 +146,23 @@ def assert_saved(output_path, safe_serialization):
         )
 
 
+def save_image_processor_metadata(image_processor, output_path):
+    if hasattr(image_processor, "save_pretrained"):
+        image_processor.save_pretrained(output_path)
+        return
+
+    metadata = {
+        "processor_class": image_processor.__class__.__name__,
+        "note": (
+            "OpenFlamingo returned a torchvision/open_clip transform object. "
+            "It is rebuilt from register.py when the model is loaded."
+        ),
+    }
+    with (output_path / "image_processor_config.json").open("w", encoding="utf-8") as file:
+        json.dump(metadata, file, indent=2)
+        file.write("\n")
+
+
 def register_model():
     AutoConfig.register(FlamingoConfig.model_type, FlamingoConfig, exist_ok=True)
     AutoModelForCausalLM.register(FlamingoConfig, FlamingoModel, exist_ok=True)
@@ -179,7 +197,7 @@ def main():
         max_shard_size=args.max_shard_size,
     )
     model.tokenizer.save_pretrained(output_path)
-    model.image_processor.save_pretrained(output_path)
+    save_image_processor_metadata(model.image_processor, output_path)
     source_file = Path(__file__).resolve()
     target_file = output_path.resolve() / source_file.name
     if source_file != target_file:
