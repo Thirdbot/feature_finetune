@@ -1,6 +1,9 @@
 import argparse
+import os
 import shutil
 from pathlib import Path
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import torch
 from open_flamingo import create_model_and_transforms
@@ -19,6 +22,12 @@ def parse_args():
     parser.add_argument("--lang_path", type=str, default=None, help="path to language model")
     parser.add_argument("--n_layers", type=int, default=1, help="cross attention n layers")
     parser.add_argument("--output_path", type=str, required=True, help="path to save registered model")
+    parser.add_argument(
+        "--max_shard_size",
+        type=str,
+        default="2GB",
+        help="maximum shard size passed to save_pretrained",
+    )
     parser.add_argument(
         "--safe_serialization",
         action="store_true",
@@ -119,6 +128,23 @@ def clone_shared_tensors(state_dict):
     return cloned_state_dict
 
 
+def assert_saved(output_path, safe_serialization):
+    config_file = output_path / "config.json"
+    weight_patterns = ["*.safetensors"] if safe_serialization else ["*.bin"]
+    weight_files = [
+        weight_file
+        for pattern in weight_patterns
+        for weight_file in output_path.glob(pattern)
+    ]
+
+    if not config_file.exists() or not weight_files:
+        found_files = ", ".join(sorted(path.name for path in output_path.iterdir()))
+        raise RuntimeError(
+            f"save_pretrained did not create a complete model in {output_path}. "
+            f"Found: {found_files or 'nothing'}"
+        )
+
+
 def register_model():
     AutoConfig.register(FlamingoConfig.model_type, FlamingoConfig, exist_ok=True)
     AutoModelForCausalLM.register(FlamingoConfig, FlamingoModel, exist_ok=True)
@@ -150,6 +176,7 @@ def main():
         output_path,
         safe_serialization=args.safe_serialization,
         state_dict=state_dict,
+        max_shard_size=args.max_shard_size,
     )
     model.tokenizer.save_pretrained(output_path)
     model.image_processor.save_pretrained(output_path)
@@ -157,6 +184,7 @@ def main():
     target_file = output_path.resolve() / source_file.name
     if source_file != target_file:
         shutil.copyfile(source_file, target_file)
+    assert_saved(output_path, args.safe_serialization)
 
     print(f"registered model saved to {output_path}")
 
