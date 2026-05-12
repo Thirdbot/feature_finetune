@@ -1,0 +1,3 @@
+1. do pretraining on unstructured data (need special domain specific)
+2. fused vision model and enable vision-text training (heavy on seismic labels)
+3. use knowledge graph as knowledge-base and do force llm to answer modality

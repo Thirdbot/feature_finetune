@@ -1,0 +1,7 @@
+.idea/
+__pycache__/
+merged_llm/
+models/
+seismic_data/
+unsloth_compiled_cache/
+visualize/
