@@ -18,6 +18,11 @@ def parse_args():
     parser.add_argument("--lang_path", type=str, default=None, help="path to language model")
     parser.add_argument("--n_layers", type=int, default=1, help="cross attention n layers")
     parser.add_argument("--output_path", type=str, required=True, help="path to save registered model")
+    parser.add_argument(
+        "--safe_serialization",
+        action="store_true",
+        help="save weights as safetensors instead of pytorch_model.bin",
+    )
     return parser.parse_args()
 
 
@@ -85,6 +90,7 @@ def build_flamingo_model(vision_path, lang_path, n_layers):
         cross_attn_every_n_layers=n_layers,
     )
     model.vision_encoder = AutoModel.from_pretrained(vision_path, trust_remote_code=True)
+    model.perceiver.input_dim = 1152
     return model, image_processor, tokenizer
 
 
@@ -112,7 +118,7 @@ def main():
         "AutoModelForCausalLM": "register.FlamingoModel",
     }
     model = FlamingoModel(config)
-    model.save_pretrained(output_path)
+    model.save_pretrained(output_path, safe_serialization=args.safe_serialization)
     model.tokenizer.save_pretrained(output_path)
     model.image_processor.save_pretrained(output_path)
     source_file = Path(__file__).resolve()
