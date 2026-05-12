@@ -2,6 +2,7 @@ import argparse
 import shutil
 from pathlib import Path
 
+import torch
 from open_flamingo import create_model_and_transforms
 from transformers import (
     AutoConfig,
@@ -90,8 +91,32 @@ def build_flamingo_model(vision_path, lang_path, n_layers):
         cross_attn_every_n_layers=n_layers,
     )
     model.vision_encoder = AutoModel.from_pretrained(vision_path, trust_remote_code=True)
-    model.perceiver.input_dim = 1152
     return model, image_processor, tokenizer
+
+
+def load_config_dict(model_path):
+    if model_path is None:
+        return None
+    return AutoConfig.from_pretrained(model_path, trust_remote_code=True).to_dict()
+
+
+def clone_shared_tensors(state_dict):
+    cloned_state_dict = {}
+    seen_storages = set()
+
+    for name, tensor in state_dict.items():
+        if not isinstance(tensor, torch.Tensor):
+            cloned_state_dict[name] = tensor
+            continue
+
+        storage_key = (tensor.device, tensor.untyped_storage().data_ptr())
+        if storage_key in seen_storages:
+            cloned_state_dict[name] = tensor.clone()
+        else:
+            seen_storages.add(storage_key)
+            cloned_state_dict[name] = tensor
+
+    return cloned_state_dict
 
 
 def register_model():
@@ -112,14 +137,20 @@ def main():
         vision_path=args.vision_path,
         lang_path=args.lang_path,
         n_layers=args.n_layers,
+        vision_config=load_config_dict(args.vision_path),
+        text_config=load_config_dict(args.lang_path),
     )
     config.auto_map = {
         "AutoConfig": "register.FlamingoConfig",
         "AutoModelForCausalLM": "register.FlamingoModel",
     }
     model = FlamingoModel(config)
-    model.tie_weights()
-    model.save_pretrained(output_path, safe_serialization=args.safe_serialization)
+    state_dict = clone_shared_tensors(model.state_dict()) if args.safe_serialization else None
+    model.save_pretrained(
+        output_path,
+        safe_serialization=args.safe_serialization,
+        state_dict=state_dict,
+    )
     model.tokenizer.save_pretrained(output_path)
     model.image_processor.save_pretrained(output_path)
     source_file = Path(__file__).resolve()
