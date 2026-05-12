@@ -118,6 +118,7 @@ def main():
         "AutoModelForCausalLM": "register.FlamingoModel",
     }
     model = FlamingoModel(config)
+    model.tie_weights()
     model.save_pretrained(output_path, safe_serialization=args.safe_serialization)
     model.tokenizer.save_pretrained(output_path)
     model.image_processor.save_pretrained(output_path)
