@@ -1,4 +1,6 @@
 import argparse
+import json
+import shutil
 from pathlib import Path
 
 import torch
@@ -55,6 +57,7 @@ def parse():
 class SeismicVisualSSLModel(nn.Module):
     def __init__(self, vision_path, freeze_vision_encoder=False):
         super().__init__()
+        self.vision_path = vision_path
         encoder = AutoModel.from_pretrained(vision_path, trust_remote_code=True)
         self.vision_encoder = VideoLLaMA3VisualAdapter(encoder)
         self.patch_size = self.vision_encoder.config.patch_size
@@ -192,7 +195,9 @@ def move_batch(batch, device):
 def save_visual_ssl_model(model, output_dir):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    model.vision_encoder.encoder.save_pretrained(output_path / 'vision_encoder')
+    vision_output_path = output_path / 'vision_encoder'
+    model.vision_encoder.encoder.save_pretrained(vision_output_path)
+    save_portable_vision_encoder_files(model.vision_encoder.encoder, model.vision_path, vision_output_path)
     torch.save(
         {
             'decoder': model.decoder.state_dict(),
@@ -201,6 +206,29 @@ def save_visual_ssl_model(model, output_dir):
         },
         output_path / 'visual_ssl_head.pt',
     )
+
+
+def save_portable_vision_encoder_files(encoder, source_path, vision_output_path):
+    config_file = vision_output_path / 'config.json'
+    with config_file.open('r', encoding='utf-8') as file:
+        config = json.load(file)
+
+    config['model_type'] = 'videollama3_vision_encoder'
+    config['architectures'] = ['Videollama3VisionEncoderModel']
+    config['auto_map'] = {
+        'AutoConfig': 'configuration_videollama3_encoder.Videollama3VisionEncoderConfig',
+        'AutoModel': 'modeling_videollama3_encoder.Videollama3VisionEncoderModel',
+    }
+
+    with config_file.open('w', encoding='utf-8') as file:
+        json.dump(config, file, indent=2)
+        file.write('\n')
+
+    source_dir = Path(source_path)
+    for file_name in ['configuration_videollama3_encoder.py', 'modeling_videollama3_encoder.py']:
+        source_file = source_dir / file_name
+        if source_file.exists():
+            shutil.copyfile(source_file, vision_output_path / file_name)
 
 
 def save_model(model, tokenizer, output_dir):
