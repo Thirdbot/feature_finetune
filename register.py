@@ -7,11 +7,18 @@ from pathlib import Path
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import torch
-from open_flamingo import create_model_and_transforms
+import torch.nn as nn
+import torch.nn.functional as F
+import open_clip
+from open_flamingo.src.factory import _infer_decoder_layers_attr_name
+from open_flamingo.src.flamingo import Flamingo
+from open_flamingo.src.flamingo_lm import FlamingoLMMixin
+from open_flamingo.src.utils import extend_instance
 from transformers import (
     AutoConfig,
     AutoModel,
     AutoModelForCausalLM,
+    AutoTokenizer,
     PretrainedConfig,
     PreTrainedModel,
 )
@@ -92,15 +99,75 @@ class FlamingoModel(PreTrainedModel):
         return super().prepare_inputs_for_generation(*args, **kwargs)
 
 
+class VideoLLaMA3VisualAdapter(nn.Module):
+    def __init__(self, encoder):
+        super().__init__()
+        self.encoder = encoder
+        self.config = encoder.config
+
+    def forward(self, images):
+        return self.visual(images)
+
+    def visual(self, images):
+        patch_size = self.config.patch_size
+        if images.shape[-1] % patch_size != 0 or images.shape[-2] % patch_size != 0:
+            height = (images.shape[-2] // patch_size) * patch_size
+            width = (images.shape[-1] // patch_size) * patch_size
+            images = F.interpolate(images, size=(height, width), mode="bilinear", align_corners=False)
+
+        patches = F.unfold(images, kernel_size=patch_size, stride=patch_size)
+        patches = patches.transpose(1, 2)
+        patches = patches.reshape(-1, images.shape[1], patch_size, patch_size)
+        encoder_param = next(self.encoder.parameters())
+        patches = patches.to(device=encoder_param.device, dtype=encoder_param.dtype)
+
+        grid_h = images.shape[-2] // patch_size
+        grid_w = images.shape[-1] // patch_size
+        grid_sizes = torch.tensor(
+            [[1, grid_h, grid_w]] * images.shape[0],
+            dtype=torch.long,
+            device=images.device,
+        )
+        merge_sizes = torch.ones(images.shape[0], dtype=torch.long, device=images.device)
+        tokens = self.encoder(
+            pixel_values=patches,
+            grid_sizes=grid_sizes,
+            merge_sizes=merge_sizes,
+        )
+        tokens = tokens.view(images.shape[0], grid_h * grid_w, -1)
+        return None, tokens
+
+
 def build_flamingo_model(vision_path, lang_path, n_layers):
-    model, image_processor, tokenizer = create_model_and_transforms(
-        clip_vision_encoder_path="ViT-L-14",
-        clip_vision_encoder_pretrained="openai",
-        lang_encoder_path=lang_path,
-        tokenizer_path=lang_path,
+    vision_encoder = AutoModel.from_pretrained(vision_path, trust_remote_code=True)
+    vision_encoder = VideoLLaMA3VisualAdapter(vision_encoder)
+    vis_dim = vision_encoder.config.hidden_size
+
+    _, _, image_processor = open_clip.create_model_and_transforms("ViT-L-14", pretrained="openai")
+
+    tokenizer = AutoTokenizer.from_pretrained(lang_path)
+    tokenizer.add_special_tokens({"additional_special_tokens": ["<|endofchunk|>", "<image>"]})
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "<PAD>"})
+
+    lang_encoder = AutoModelForCausalLM.from_pretrained(lang_path)
+    extend_instance(lang_encoder, FlamingoLMMixin)
+    lang_encoder.set_decoder_layers_attr_name(_infer_decoder_layers_attr_name(lang_encoder))
+    lang_encoder.resize_token_embeddings(len(tokenizer))
+
+    model = Flamingo(
+        vision_encoder=vision_encoder,
+        lang_encoder=lang_encoder,
+        eoc_token_id=tokenizer.encode("<|endofchunk|>")[-1],
+        media_token_id=tokenizer.encode("<image>")[-1],
+        vis_dim=vis_dim,
         cross_attn_every_n_layers=n_layers,
     )
-    model.vision_encoder = AutoModel.from_pretrained(vision_path, trust_remote_code=True)
+
+    model.requires_grad_(False)
+    model.perceiver.requires_grad_(True)
+    model.lang_encoder.gated_cross_attn_layers.requires_grad_(True)
+    model.lang_encoder.get_input_embeddings().requires_grad_(True)
     return model, image_processor, tokenizer
 
 
