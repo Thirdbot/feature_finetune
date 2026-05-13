@@ -17,7 +17,13 @@ from data_loader import (
     SeismicVisualSSLDataset,
     seismic_tokens,
 )
-from register import FlamingoConfig, FlamingoModel, VideoLLaMA3VisualAdapter, register_model
+from register import (
+    FlamingoConfig,
+    FlamingoModel,
+    VideoLLaMA3VisualAdapter,
+    clone_shared_tensors,
+    register_model,
+)
 
 
 def parse():
@@ -237,7 +243,12 @@ def save_portable_vision_encoder_files(encoder, source_path, vision_output_path)
 def save_model(model, tokenizer, output_dir):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(output_path, safe_serialization=False)
+    state_dict = clone_shared_tensors(model.state_dict())
+    model.save_pretrained(
+        output_path,
+        safe_serialization=False,
+        state_dict=state_dict,
+    )
     tokenizer.save_pretrained(output_path)
 
 
