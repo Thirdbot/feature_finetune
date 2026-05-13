@@ -127,6 +127,9 @@ def setup_tokenizer(model, args):
         tokenizer.add_special_tokens({'pad_token': '<PAD>'})
 
     model.model.lang_encoder.resize_token_embeddings(len(tokenizer))
+    model_dtype = next(model.model.lang_encoder.parameters()).dtype
+    model.model.perceiver.to(dtype=model_dtype)
+    model.model.lang_encoder.gated_cross_attn_layers.to(dtype=model_dtype)
     return tokenizer
 
 

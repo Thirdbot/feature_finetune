@@ -163,6 +163,9 @@ def build_flamingo_model(vision_path, lang_path, n_layers):
         vis_dim=vis_dim,
         cross_attn_every_n_layers=n_layers,
     )
+    model_dtype = next(model.lang_encoder.parameters()).dtype
+    model.perceiver.to(dtype=model_dtype)
+    model.lang_encoder.gated_cross_attn_layers.to(dtype=model_dtype)
 
     model.requires_grad_(False)
     model.perceiver.requires_grad_(True)
