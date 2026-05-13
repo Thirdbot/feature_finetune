@@ -381,6 +381,7 @@ def train_multimodal(args):
 
     loader = make_loader(args, tokenizer)
     params = [param for param in model.parameters() if param.requires_grad]
+    print_trainable_parameters(model)
     optimizer = torch.optim.AdamW(params, lr=args.learning_rate)
 
     step = 0
@@ -393,11 +394,17 @@ def train_multimodal(args):
             loss = output.loss / args.grad_accum
             loss.backward()
 
-            if (batch_idx + 1) % args.grad_accum == 0:
+            is_accum_step = (batch_idx + 1) % args.grad_accum == 0
+            is_last_step = batch_idx + 1 == len(loader)
+            if is_accum_step or is_last_step:
+                grad_norm = get_grad_norm(params)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 step += 1
-                progress.set_postfix(loss=float(loss.item() * args.grad_accum))
+                progress.set_postfix(
+                    loss=float(loss.item() * args.grad_accum),
+                    grad_norm=grad_norm,
+                )
 
                 if args.save_steps > 0 and step % args.save_steps == 0:
                     save_model(model, tokenizer, args.output_dir)
@@ -407,6 +414,25 @@ def train_multimodal(args):
                     return
 
     save_model(model, tokenizer, args.output_dir)
+
+
+def print_trainable_parameters(model):
+    total = 0
+    trainable = 0
+    for param in model.parameters():
+        count = param.numel()
+        total += count
+        if param.requires_grad:
+            trainable += count
+    print(f'trainable parameters: {trainable} / {total}')
+
+
+def get_grad_norm(params):
+    total = 0.0
+    for param in params:
+        if param.grad is not None:
+            total += float(param.grad.detach().float().norm().item())
+    return total
 
 
 def train(args):
