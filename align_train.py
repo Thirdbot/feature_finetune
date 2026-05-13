@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from peft import LoraConfig, get_peft_model
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoModel, AutoModelForCausalLM
+from transformers import AutoModel
 
 from data_loader import (
     SeismicMultimodalCollator,
@@ -98,11 +98,7 @@ class SeismicVisualSSLModel(nn.Module):
 def load_model(args):
     register_model()
     if args.model_path:
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_path,
-            trust_remote_code=True,
-        )
-        return model
+        return load_flamingo_checkpoint(args.model_path, args)
 
     config = FlamingoConfig(
         vision_path=args.vision_path,
@@ -110,6 +106,82 @@ def load_model(args):
         n_layers=args.n_layers,
     )
     return FlamingoModel(config)
+
+
+def load_flamingo_checkpoint(model_path, args):
+    model_path = Path(model_path)
+    config_file = model_path / 'config.json'
+    if config_file.exists():
+        with config_file.open('r', encoding='utf-8') as file:
+            saved_config = json.load(file)
+    else:
+        saved_config = {}
+
+    config = FlamingoConfig(
+        vision_path=saved_config.get('vision_path') or args.vision_path,
+        lang_path=saved_config.get('lang_path') or args.lang_path,
+        n_layers=saved_config.get('n_layers') or args.n_layers,
+        vision_config=saved_config.get('vision_config'),
+        text_config=saved_config.get('text_config'),
+    )
+    model = FlamingoModel(config)
+    state_dict = load_checkpoint_state_dict(model_path)
+    load_matching_state_dict(model, state_dict)
+    return model
+
+
+def load_checkpoint_state_dict(model_path):
+    model_path = Path(model_path)
+    bin_file = model_path / 'pytorch_model.bin'
+    bin_index = model_path / 'pytorch_model.bin.index.json'
+    safetensors_file = model_path / 'model.safetensors'
+    safetensors_index = model_path / 'model.safetensors.index.json'
+
+    if bin_file.exists():
+        return torch.load(bin_file, map_location='cpu')
+
+    if bin_index.exists():
+        with bin_index.open('r', encoding='utf-8') as file:
+            index = json.load(file)
+        state_dict = {}
+        for shard_name in sorted(set(index['weight_map'].values())):
+            state_dict.update(torch.load(model_path / shard_name, map_location='cpu'))
+        return state_dict
+
+    if safetensors_file.exists():
+        from safetensors.torch import load_file
+        return load_file(safetensors_file)
+
+    if safetensors_index.exists():
+        from safetensors.torch import load_file
+        with safetensors_index.open('r', encoding='utf-8') as file:
+            index = json.load(file)
+        state_dict = {}
+        for shard_name in sorted(set(index['weight_map'].values())):
+            state_dict.update(load_file(model_path / shard_name))
+        return state_dict
+
+    raise FileNotFoundError(f'no checkpoint weights found in {model_path}')
+
+
+def load_matching_state_dict(model, state_dict):
+    current = model.state_dict()
+    filtered = {}
+    skipped = []
+
+    for key, value in state_dict.items():
+        if key in current and current[key].shape == value.shape:
+            filtered[key] = value
+        else:
+            skipped.append(key)
+
+    missing, unexpected = model.load_state_dict(filtered, strict=False)
+    if skipped:
+        print(f'skipped {len(skipped)} tensors with mismatched shape')
+    if missing:
+        print(f'missing {len(missing)} tensors while loading checkpoint')
+    if unexpected:
+        print(f'unexpected {len(unexpected)} tensors while loading checkpoint')
 
 
 def freeze_for_bridge_training(model):
