@@ -109,6 +109,8 @@ class VideoLLaMA3VisualAdapter(nn.Module):
         return self.visual(images)
 
     def visual(self, images):
+        encoder_param = next(self.encoder.parameters())
+        images = images.to(device=encoder_param.device, dtype=encoder_param.dtype)
         patch_size = self.config.patch_size
         if images.shape[-1] % patch_size != 0 or images.shape[-2] % patch_size != 0:
             height = (images.shape[-2] // patch_size) * patch_size
@@ -118,8 +120,6 @@ class VideoLLaMA3VisualAdapter(nn.Module):
         patches = F.unfold(images, kernel_size=patch_size, stride=patch_size)
         patches = patches.transpose(1, 2)
         patches = patches.reshape(-1, images.shape[1], patch_size, patch_size)
-        encoder_param = next(self.encoder.parameters())
-        patches = patches.to(device=encoder_param.device, dtype=encoder_param.dtype)
 
         grid_h = images.shape[-2] // patch_size
         grid_w = images.shape[-1] // patch_size
