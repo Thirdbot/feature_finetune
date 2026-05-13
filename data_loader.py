@@ -276,6 +276,106 @@ class SeismicMultimodalCollator:
         }
 
 
+class SeismicVisualSSLDataset(Dataset):
+    def __init__(
+        self,
+        data_dir='./save_data/',
+        samples_per_file=1000,
+        patch_traces=64,
+        patch_samples=64,
+        image_size=224,
+        vision_patch_size=14,
+        mask_ratio=0.5,
+        seed=42,
+    ):
+        self.files = list_npy(data_dir)
+        if not self.files:
+            raise FileNotFoundError(f'no .npy files found in {data_dir}')
+
+        self.data = [np.load(el, mmap_mode='r') for el in self.files]
+        self.samples_per_file = samples_per_file
+        self.patch_traces = patch_traces
+        self.patch_samples = patch_samples
+        self.image_size = image_size
+        self.vision_patch_size = vision_patch_size
+        self.mask_ratio = mask_ratio
+        self.seed = seed
+
+    def __len__(self):
+        return len(self.files) * self.samples_per_file
+
+    def make_patch(self, data, rng):
+        if data.ndim == 2:
+            max_trace = max(data.shape[0] - self.patch_traces, 1)
+            max_sample = max(data.shape[1] - self.patch_samples, 1)
+            trace_start = rng.integers(0, max_trace)
+            sample_start = rng.integers(0, max_sample)
+            return np.asarray(data[
+                trace_start:trace_start + self.patch_traces,
+                sample_start:sample_start + self.patch_samples,
+            ])
+
+        if data.ndim == 3:
+            axis0 = rng.integers(0, data.shape[0])
+            max_trace = max(data.shape[1] - self.patch_traces, 1)
+            max_sample = max(data.shape[2] - self.patch_samples, 1)
+            trace_start = rng.integers(0, max_trace)
+            sample_start = rng.integers(0, max_sample)
+            return np.asarray(data[
+                axis0,
+                trace_start:trace_start + self.patch_traces,
+                sample_start:sample_start + self.patch_samples,
+            ])
+
+        raise ValueError(f'expected 2D or 3D seismic data, got shape {data.shape}')
+
+    def make_image(self, patch):
+        patch = normalize_patch(patch).astype(np.float32)
+        patch = torch.from_numpy(patch).unsqueeze(0).unsqueeze(0)
+        patch = F.interpolate(
+            patch,
+            size=(self.image_size, self.image_size),
+            mode='bilinear',
+            align_corners=False,
+        )[0]
+        return patch.repeat(3, 1, 1)
+
+    def make_mask(self, rng):
+        grid_size = self.image_size // self.vision_patch_size
+        mask = rng.random(grid_size * grid_size) < self.mask_ratio
+        if not mask.any():
+            mask[rng.integers(0, mask.shape[0])] = True
+        return torch.from_numpy(mask)
+
+    def apply_mask(self, image, mask):
+        image = image.clone()
+        grid_size = self.image_size // self.vision_patch_size
+        mask = mask.view(grid_size, grid_size)
+        for row in range(grid_size):
+            for col in range(grid_size):
+                if mask[row, col]:
+                    h0 = row * self.vision_patch_size
+                    w0 = col * self.vision_patch_size
+                    image[
+                        :,
+                        h0:h0 + self.vision_patch_size,
+                        w0:w0 + self.vision_patch_size,
+                    ] = 0
+        return image
+
+    def __getitem__(self, idx):
+        file_idx = idx // self.samples_per_file
+        rng = np.random.default_rng(self.seed + idx)
+        patch = self.make_patch(self.data[file_idx], rng)
+        image = self.make_image(patch)
+        mask = self.make_mask(rng)
+        return {
+            'masked_image': self.apply_mask(image, mask),
+            'target_image': image,
+            'patch_mask': mask,
+        }
+
+
 def main():
     args = parse()
     read_dir(args.data_dir, args.save_dir)
